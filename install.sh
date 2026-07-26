@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ai-env - Installer
-# Usage: ./install.sh   OR   curl -fsSL <url>/install.sh | bash
+# Usage:
+#   ./install.sh
+#   curl -fsSL https://raw.githubusercontent.com/unifare/ai-env/main/install.sh | bash
 # ==============================================================================
 
 set -euo pipefail
@@ -10,6 +12,7 @@ AI_ENV_VERSION="1.0.0"
 AI_ENV_DIR="${HOME}/.config/ai-env"
 AI_ENV_LOCAL_BIN="${HOME}/.local/bin"
 AI_ENV_SYSTEM_BIN="/usr/local/bin"
+AI_ENV_REPO_RAW="https://raw.githubusercontent.com/unifare/ai-env/main"
 
 # ---- Color output ----
 _RED='\033[0;31m'
@@ -25,29 +28,49 @@ _err()   { printf "  ${_RED}✗${_RESET} %s\n" "$1" >&2; }
 _warn()  { printf "  ${_YELLOW}⚠${_RESET} %s\n" "$1"; }
 _info()  { printf "  ${_CYAN}ℹ${_RESET} %s\n" "$1"; }
 
-# ---- Determine script directory ----
-# If running from curl, the script source files are in the same directory as
-# this installer. If running as ./install.sh, resolve the directory.
-_RESOLVE_SCRIPT_DIR() {
-    local src="${BASH_SOURCE[0]}"
-    # If sourced via pipe (curl | bash), BASH_SOURCE may be empty or /dev/stdin
-    if [ -z "$src" ] || [ "$src" = "/dev/stdin" ] || [ "$src" = "/dev/fd/63" ]; then
-        # Running from pipe — look for files in current directory
-        echo "$(pwd)"
+# ---- Detect installation mode ----
+_IS_PIPE_INSTALL=0
+_SCRIPT_DIR=""
+
+_DETECT_MODE() {
+    local src="${BASH_SOURCE[0]:-}"
+    # If running from pipe (curl | bash), BASH_SOURCE is empty or /dev/stdin
+    if [ -z "$src" ] || [ "$src" = "/dev/stdin" ] || [ "$src" = "/dev/fd/63" ] || [ ! -f "$src" ]; then
+        _IS_PIPE_INSTALL=1
+        _info "Detected pipe install mode (curl | bash)"
     else
-        # Running as a file
-        local dir
-        dir=$(cd "$(dirname "$src")" && pwd)
-        echo "$dir"
+        _SCRIPT_DIR="$(cd "$(dirname "$src")" && pwd)"
+        # Verify source files exist in script directory
+        if [ -f "${_SCRIPT_DIR}/ai-env" ] && [ -f "${_SCRIPT_DIR}/init.sh" ]; then
+            _ok "Local source files found"
+        else
+            _warn "Source files not found locally, falling back to download"
+            _IS_PIPE_INSTALL=1
+        fi
     fi
 }
 
-SCRIPT_DIR=$(_RESOLVE_SCRIPT_DIR)
+# ---- Download a file from GitHub ----
+_DOWNLOAD_FILE() {
+    local filename="$1"
+    local target="$2"
+    local url="${AI_ENV_REPO_RAW}/${filename}"
+
+    _info "Downloading ${filename}..."
+
+    # Try curl first, then wget
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$url" -o "$target" 2>/dev/null && return 0
+    elif command -v wget &>/dev/null; then
+        wget -q "$url" -O "$target" 2>/dev/null && return 0
+    fi
+
+    _err "Failed to download ${filename}"
+    return 1
+}
 
 # ---- Determine installation target ----
 _DETERMINE_BIN_DIR() {
-    # Prefer ~/.local/bin if it exists or can be created
-    # Fall back to /usr/local/bin if user has write access
     if [ -w "$AI_ENV_SYSTEM_BIN" ] 2>/dev/null; then
         echo "$AI_ENV_SYSTEM_BIN"
     else
@@ -61,14 +84,12 @@ BIN_DIR=$(_DETERMINE_BIN_DIR)
 _CHECK_PREREQS() {
     _step "Checking prerequisites"
 
-    # Check bash
     if [ -z "${BASH_VERSION:-}" ]; then
         _warn "Not running in Bash. Some features may not work."
     else
         _ok "Bash ${BASH_VERSION%%-*}"
     fi
 
-    # Check core tools
     for tool in sed grep mktemp chmod cat; do
         if command -v "$tool" &>/dev/null; then
             _ok "$tool available"
@@ -77,6 +98,18 @@ _CHECK_PREREQS() {
             exit 1
         fi
     done
+
+    # For pipe install, we need curl or wget
+    if [ "$_IS_PIPE_INSTALL" -eq 1 ]; then
+        if command -v curl &>/dev/null; then
+            _ok "curl available (for downloading)"
+        elif command -v wget &>/dev/null; then
+            _ok "wget available (for downloading)"
+        else
+            _err "curl or wget required for remote install"
+            exit 1
+        fi
+    fi
 }
 
 # ---- Create directories ----
@@ -99,16 +132,13 @@ _INSTALL_BINARY() {
     _step "Installing ai-env binary"
 
     local target="${BIN_DIR}/ai-env"
-    local source_file="${SCRIPT_DIR}/ai-env"
 
-    # If source file doesn't exist, try to create from embedded content
-    if [ ! -f "$source_file" ]; then
-        _err "Source file not found: ${source_file}"
-        _info "Make sure ai-env script is in the same directory as install.sh"
-        exit 1
+    if [ "$_IS_PIPE_INSTALL" -eq 0 ] && [ -f "${_SCRIPT_DIR}/ai-env" ]; then
+        cp "${_SCRIPT_DIR}/ai-env" "$target"
+    else
+        _DOWNLOAD_FILE "ai-env" "$target"
     fi
 
-    cp "$source_file" "$target"
     chmod 755 "$target"
     _ok "Installed: ${target}"
 }
@@ -118,14 +148,13 @@ _INSTALL_INIT() {
     _step "Installing init.sh"
 
     local target="${AI_ENV_DIR}/init.sh"
-    local source_file="${SCRIPT_DIR}/init.sh"
 
-    if [ ! -f "$source_file" ]; then
-        _err "Source file not found: ${source_file}"
-        exit 1
+    if [ "$_IS_PIPE_INSTALL" -eq 0 ] && [ -f "${_SCRIPT_DIR}/init.sh" ]; then
+        cp "${_SCRIPT_DIR}/init.sh" "$target"
+    else
+        _DOWNLOAD_FILE "init.sh" "$target"
     fi
 
-    cp "$source_file" "$target"
     chmod 644 "$target"
     _ok "Installed: ${target}"
 }
@@ -135,19 +164,21 @@ _INSTALL_CONFIG() {
     _step "Installing config"
 
     local target="${AI_ENV_DIR}/config"
-    local source_file="${SCRIPT_DIR}/config"
 
-    if [ -f "$source_file" ]; then
-        cp "$source_file" "$target"
-        _ok "Installed: ${target}"
+    if [ "$_IS_PIPE_INSTALL" -eq 0 ] && [ -f "${_SCRIPT_DIR}/config" ]; then
+        cp "${_SCRIPT_DIR}/config" "$target"
     else
-        # Create default config if source doesn't exist
+        # Create default config (small enough to inline)
         cat > "$target" <<CONF
 # ai-env configuration
 AI_ENV_VERSION=${AI_ENV_VERSION}
+
+# Mask mode for list command: full | partial | none
+AI_ENV_MASK_MODE=partial
 CONF
-        _ok "Created default config: ${target}"
     fi
+
+    _ok "Installed: ${target}"
 }
 
 # ---- Create keys file (if not exists) ----
@@ -166,12 +197,11 @@ _ENSURE_KEYS_FILE() {
 # ---- Add to PATH ----
 _ADD_TO_PATH() {
     if [ "$BIN_DIR" != "$AI_ENV_LOCAL_BIN" ]; then
-        return 0  # System bin, already in PATH
+        return 0
     fi
 
     _step "Adding ~/.local/bin to PATH"
 
-    # Check if already in PATH
     case ":${PATH}:" in
         *":${AI_ENV_LOCAL_BIN}:"*|"${AI_ENV_LOCAL_BIN}:"*|*":${AI_ENV_LOCAL_BIN}")
             _ok "~/.local/bin already in PATH"
@@ -179,7 +209,6 @@ _ADD_TO_PATH() {
             ;;
     esac
 
-    # Add to PATH in shell rc files
     local path_line='export PATH="${HOME}/.local/bin:${PATH}"'
 
     for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
@@ -195,7 +224,6 @@ _ADD_TO_PATH() {
         fi
     done
 
-    # Also add for current session
     export PATH="${AI_ENV_LOCAL_BIN}:${PATH}"
     _ok "Added to current session PATH"
 }
@@ -209,11 +237,8 @@ _ADD_SHELL_INTEGRATION() {
     local rc_found=0
 
     for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.profile"; do
-        # Only add to rc files that exist (or .bashrc which is standard)
         if [ "$rc_file" = "${HOME}/.bashrc" ] || [ "$rc_file" = "${HOME}/.zshrc" ]; then
-            # Create .bashrc / .zshrc if they don't exist
             if [ ! -f "$rc_file" ]; then
-                # Only create if the corresponding shell is detected
                 if [ "$rc_file" = "${HOME}/.bashrc" ] && [ -n "${BASH_VERSION:-}" ]; then
                     touch "$rc_file"
                 elif [ "$rc_file" = "${HOME}/.zshrc" ] && [ -n "${ZSH_VERSION:-}" ]; then
@@ -280,6 +305,7 @@ main() {
     printf "${_BOLD}ai-env v${AI_ENV_VERSION} installer${_RESET}\n"
     printf "══════════════════════════════════════\n"
 
+    _DETECT_MODE
     _CHECK_PREREQS
     _CREATE_DIRS
     _INSTALL_BINARY

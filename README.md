@@ -14,7 +14,7 @@
 ## 快速安装
 
 ```bash
-curl -fsSL https://example.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/unifare/ai-env/main/install.sh | bash
 ```
 
 或者克隆后本地安装：
