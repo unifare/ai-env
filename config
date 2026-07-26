@@ -1,0 +1,10 @@
+# ai-env configuration
+# This file is managed by ai-env.
+
+AI_ENV_VERSION=1.0.0
+
+# Mask mode for list command: full | partial | none
+# full:    show ******** for all values
+# partial: show first4****last4
+# none:    show full values (DANGEROUS)
+AI_ENV_MASK_MODE=partial
