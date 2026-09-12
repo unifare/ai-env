@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ai-env - AI API Key Manager
+# Manage your AI API keys from the command line.
+# Version: 1.0.0
+# ==============================================================================
+
+set -euo pipefail
+
+# ---- Configuration ----
+AI_ENV_VERSION="1.0.0"
+AI_ENV_DIR="${AI_ENV_DIR:-${HOME}/.config/ai-env}"
+AI_ENV_KEYS="${AI_ENV_DIR}/keys"
+AI_ENV_CONFIG="${AI_ENV_DIR}/config"
+AI_ENV_INIT="${AI_ENV_DIR}/init.sh"
+AI_ENV_EVAL_PREFIX="__EVAL__:"
+
+# ---- Color output ----
+_RED=$'\033[0;31m'
+_GREEN=$'\033[0;32m'
+_YELLOW=$'\033[0;33m'
+_CYAN=$'\033[0;36m'
+_BOLD=$'\033[1m'
+_RESET=$'\033[0m'
+
+_print_ok()   { printf "${_GREEN}✓${_RESET} %s\n" "$1"; }
+_print_err()  { printf "${_RED}✗${_RESET} %s\n" "$1" >&2; }
+_print_warn() { printf "${_YELLOW}⚠${_RESET} %s\n" "$1"; }
+_print_info() { printf "${_CYAN}ℹ${_RESET} %s\n" "$1"; }
+
+# ---- Validation ----
+
+# Validate variable name: [A-Za-z_][A-Za-z0-9_]*
+_validate_var_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        _print_err "Invalid variable name: '${name}'. Must match [A-Za-z_][A-Za-z0-9_]*"
+        return 1
+    fi
+    return 0
+}
+
+# Escape single quotes for safe storage in single-quoted string
+# '  →  '\''
+_escape_single_quotes() {
+    local value="$1"
+    # Replace each ' with '\''
+    printf '%s' "$value" | sed "s/'/'\\''/g"
+}
+
+# ---- Core functions ----
+
+# Ensure the keys file exists
+_ensure_keys_file() {
+    if [ ! -f "$AI_ENV_KEYS" ]; then
+        touch "$AI_ENV_KEYS"
+        chmod 600 "$AI_ENV_KEYS"
+    fi
+}
+
+# Count keys in the keys file
+_count_keys() {
+    if [ ! -f "$AI_ENV_KEYS" ]; then
+        echo 0
+        return
+    fi
+    grep -c '^export [A-Za-z_][A-Za-z0-9_]*=' "$AI_ENV_KEYS" 2>/dev/null || echo 0
+}
+
+# ---- Commands ----
+
+_cmd_set() {
+    if [ $# -lt 2 ]; then
+        _print_err "Usage: ai-env set <KEY> <VALUE>"
+        return 1
+    fi
+
+    local key="$1"
+    local value="$2"
+
+    _validate_var_name "$key" || return 1
+
+    # Escape the value for single-quoted storage
+    local escaped_value
+    escaped_value=$(_escape_single_quotes "$value")
+
+    local export_line="export ${key}='${escaped_value}'"
+
+    _ensure_keys_file
+
+    # Remove existing entry for this key (if any), then append new one
+    local tmp_file
+    tmp_file=$(mktemp "${AI_ENV_DIR}/.keys.XXXXXX")
+    if [ -f "$AI_ENV_KEYS" ]; then
+        grep -v "^export ${key}=" "$AI_ENV_KEYS" > "$tmp_file" 2>/dev/null || true
+    fi
+    echo "$export_line" >> "$tmp_file"
+    mv "$tmp_file" "$AI_ENV_KEYS"
+    chmod 600 "$AI_ENV_KEYS"
+
+    # Output eval command for current shell (consumed by function wrapper)
+    echo "${AI_ENV_EVAL_PREFIX} ${export_line}"
+    _print_ok "${key} set"
+}
+
+_cmd_get() {
+    if [ $# -lt 1 ]; then
+        _print_err "Usage: ai-env get <KEY>"
+        return 1
+    fi
+
+    local key="$1"
+    _validate_var_name "$key" || return 1
+
+    # Try environment variable first (available when running through function wrapper)
+    local value="${!key:-}"
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+
+    # Fall back: source keys file in a subshell and extract value
+    if [ -f "$AI_ENV_KEYS" ] && [ -s "$AI_ENV_KEYS" ]; then
+        # key is already validated to match [A-Za-z_][A-Za-z0-9_]* so safe for eval
+        value=$(bash -c "source '${AI_ENV_KEYS}' 2>/dev/null && printf '%s' \"\${${key}:-}\"")
+        if [ -n "$value" ]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    fi
+
+    _print_err "${key} not found"
+    return 1
+}
+
+_cmd_list() {
+    if [ ! -f "$AI_ENV_KEYS" ] || [ ! -s "$AI_ENV_KEYS" ]; then
+        _print_info "No keys configured"
+        return 0
+    fi
+
+    # Print header
+    printf "${_BOLD}%-35s %s${_RESET}\n" "KEY" "VALUE"
+    printf '%-35s %s\n' "-----------------------------------" "-------------------"
+
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+        local key
+        key=$(printf '%s' "$line" | sed 's/^export //' | sed 's/=.*//')
+
+        # Validate this looks like an export line
+        [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+
+        # Mask the value: show first 4 and last 4 chars if long enough
+        local value="${!key:-}"
+        local masked
+        if [ -z "$value" ]; then
+            # Try reading from file
+            value=$(bash -c "source '${AI_ENV_KEYS}' 2>/dev/null && printf '%s' \"\${${key}:-}\"")
+        fi
+
+        if [ ${#value} -le 8 ]; then
+            masked="********"
+        else
+            local head="${value:0:4}"
+            local tail="${value: -4}"
+            masked="${head}****${tail}"
+        fi
+
+        printf '%-35s %s\n' "$key" "$masked"
+    done < "$AI_ENV_KEYS"
+}
+
+_cmd_remove() {
+    if [ $# -lt 1 ]; then
+        _print_err "Usage: ai-env remove <KEY>"
+        return 1
+    fi
+
+    local key="$1"
+    _validate_var_name "$key" || return 1
+
+    if [ ! -f "$AI_ENV_KEYS" ]; then
+        _print_err "${key} not found"
+        return 1
+    fi
+
+    if ! grep -q "^export ${key}=" "$AI_ENV_KEYS"; then
+        _print_err "${key} not found"
+        return 1
+    fi
+
+    # Remove the line from keys file
+    local tmp_file
+    tmp_file=$(mktemp "${AI_ENV_DIR}/.keys.XXXXXX")
+    grep -v "^export ${key}=" "$AI_ENV_KEYS" > "$tmp_file"
+    mv "$tmp_file" "$AI_ENV_KEYS"
+    chmod 600 "$AI_ENV_KEYS"
+
+    # Output unset command for current shell
+    echo "${AI_ENV_EVAL_PREFIX} unset ${key}"
+    _print_ok "${key} removed"
+}
+
+_cmd_reload() {
+    if [ ! -f "$AI_ENV_KEYS" ]; then
+        _print_err "No keys file found at ${AI_ENV_KEYS}"
+        return 1
+    fi
+
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        local key
+        key=$(printf '%s' "$line" | sed 's/^export //' | sed 's/=.*//')
+        [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+        echo "${AI_ENV_EVAL_PREFIX} ${line}"
+        count=$((count + 1))
+    done < "$AI_ENV_KEYS"
+
+    _print_ok "Reloaded ${count} key(s)"
+}
+
+_cmd_export() {
+    if [ ! -f "$AI_ENV_KEYS" ] || [ ! -s "$AI_ENV_KEYS" ]; then
+        return 0
+    fi
+
+    cat "$AI_ENV_KEYS"
+}
+
+_cmd_doctor() {
+    local issues=0
+
+    printf "\n${_BOLD}ai-env doctor${_RESET}\n"
+    printf "${_BOLD}────────────────────────────────────────${_RESET}\n"
+
+    # 1. Check config directory
+    if [ -d "$AI_ENV_DIR" ]; then
+        _print_ok "Config directory: ${AI_ENV_DIR}"
+    else
+        _print_err "Config directory not found: ${AI_ENV_DIR}"
+        issues=$((issues + 1))
+    fi
+
+    # 2. Check ai-env binary in PATH
+    local ai_env_bin
+    ai_env_bin=$(command -v ai-env 2>/dev/null || true)
+    if [ -n "$ai_env_bin" ]; then
+        _print_ok "ai-env in PATH: ${ai_env_bin}"
+    else
+        _print_err "ai-env not in PATH"
+        issues=$((issues + 1))
+    fi
+
+    # 3. Check init.sh exists
+    if [ -f "$AI_ENV_INIT" ]; then
+        _print_ok "Init script: ${AI_ENV_INIT}"
+    else
+        _print_err "Init script not found: ${AI_ENV_INIT}"
+        issues=$((issues + 1))
+    fi
+
+    # 4. Check shell integration
+    local checked_rc=""
+    for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.profile"; do
+        if [ -f "$rc_file" ]; then
+            if grep -q 'ai-env/init\.sh' "$rc_file" 2>/dev/null; then
+                _print_ok "Shell integration in $(basename "$rc_file")"
+                checked_rc="$rc_file"
+                break
+            fi
+        fi
+    done
+
+    if [ -z "$checked_rc" ]; then
+        _print_err "Shell integration not found in any rc file"
+        _print_info "Run: ai-env set <KEY> <VALUE>  (or reinstall)"
+        issues=$((issues + 1))
+    fi
+
+    # 5. Check shell function loaded
+    if [ -n "${_AI_ENV_FUNC:-}" ]; then
+        _print_ok "Shell function loaded"
+    else
+        _print_warn "Shell function not loaded (source ${AI_ENV_INIT} to load)"
+        issues=$((issues + 1))
+    fi
+
+    # 6. Check keys file
+    if [ -f "$AI_ENV_KEYS" ]; then
+        local key_count
+        key_count=$(_count_keys)
+        _print_ok "Keys file exists (${key_count} key(s))"
+    else
+        _print_warn "Keys file not found (will be created on first set)"
+    fi
+
+    # 7. Check permissions
+    if [ -f "$AI_ENV_KEYS" ]; then
+        local perms
+        # Try GNU stat first, then BSD stat
+        perms=$(stat -c '%a' "$AI_ENV_KEYS" 2>/dev/null || stat -f '%Lp' "$AI_ENV_KEYS" 2>/dev/null || echo "unknown")
+        if [ "$perms" = "600" ] || [ "$perms" = "400" ]; then
+            _print_ok "Keys file permissions: ${perms} (secure)"
+        elif [ "$perms" = "unknown" ]; then
+            _print_info "Could not check keys file permissions"
+        else
+            _print_warn "Keys file permissions: ${perms} (recommend 600)"
+            _print_info "Fix: chmod 600 ${AI_ENV_KEYS}"
+            issues=$((issues + 1))
+        fi
+    fi
+
+    # 8. Check PATH for ~/.local/bin
+    local local_bin="${HOME}/.local/bin"
+    if [ -d "$local_bin" ]; then
+        case ":${PATH}:" in
+            *":${local_bin}:"*|"${local_bin}:"*|*":${local_bin}")
+                _print_ok "~/.local/bin in PATH"
+                ;;
+            *)
+                _print_warn "~/.local/bin exists but not in PATH"
+                issues=$((issues + 1))
+                ;;
+        esac
+    fi
+
+    printf "${_BOLD}────────────────────────────────────────${_RESET}\n"
+    if [ $issues -eq 0 ]; then
+        _print_ok "All checks passed"
+    else
+        _print_err "${issues} issue(s) found"
+        return 1
+    fi
+}
+
+_cmd_version() {
+    printf "ai-env v%s\n" "$AI_ENV_VERSION"
+}
+
+_cmd_help() {
+    printf "${_BOLD}ai-env${_RESET} - AI API Key Manager v${AI_ENV_VERSION}\n\n"
+    printf "${_BOLD}Usage:${_RESET}\n"
+    printf "  ai-env set <KEY> <VALUE>    Set an environment variable\n"
+    printf "  ai-env get <KEY>            Get the value of a variable\n"
+    printf "  ai-env list                 List all variables (values masked)\n"
+    printf "  ai-env remove <KEY>         Remove a variable\n"
+    printf "  ai-env reload               Reload all variables into current shell\n"
+    printf "  ai-env export               Export all variables (for piping)\n"
+    printf "  ai-env doctor               Run diagnostic checks\n"
+    printf "  ai-env version              Show version\n"
+    printf "  ai-env help                 Show this help\n\n"
+    printf "${_BOLD}Examples:${_RESET}\n"
+    printf "  ai-env set OPENAI_API_KEY sk-xxxx\n"
+    printf "  ai-env get OPENAI_API_KEY\n"
+    printf "  ai-env list\n"
+    printf "  ai-env remove OPENAI_API_KEY\n"
+    printf "  ai-env reload\n"
+    printf "  ai-env export > ~/.env.backup\n\n"
+    printf "${_BOLD}Configuration:${_RESET}\n"
+    printf "  Directory:  ~/.config/ai-env/\n"
+    printf "  Keys file:  ~/.config/ai-env/keys\n"
+    printf "  Init file:  ~/.config/ai-env/init.sh\n"
+    printf "  Config:     ~/.config/ai-env/config\n\n"
+    printf "${_BOLD}Supported Shells:${_RESET}\n"
+    printf "  Bash, Zsh\n\n"
+    printf "${_BOLD}Supported Platforms:${_RESET}\n"
+    printf "  Ubuntu, Debian, CentOS, Rocky, AlmaLinux, WSL, macOS\n"
+}
+
+# ---- Main ----
+
+main() {
+    if [ $# -eq 0 ]; then
+        _cmd_help
+        exit 0
+    fi
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        set)
+            _cmd_set "$@"
+            ;;
+        get)
+            _cmd_get "$@"
+            ;;
+        list|ls)
+            _cmd_list
+            ;;
+        remove|rm|delete|unset)
+            _cmd_remove "$@"
+            ;;
+        reload)
+            _cmd_reload
+            ;;
+        export)
+            _cmd_export
+            ;;
+        doctor)
+            _cmd_doctor
+            ;;
+        version|-v|--version)
+            _cmd_version
+            ;;
+        help|-h|--help)
+            _cmd_help
+            ;;
+        *)
+            _print_err "Unknown command: ${cmd}"
+            _print_info "Run 'ai-env help' for usage"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
