@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # ai-env.ps1 - AI API Key Manager for PowerShell
 # Version: 1.0.0
 # ==============================================================================
@@ -21,23 +21,19 @@ $AI_ENV_EVAL_PREFIX = "__EVAL__:"
 
 # Utility output helpers
 function Print-Ok($msg) {
-    Write-Host "✓ " -NoNewline -ForegroundColor Green
-    Write-Host $msg
+    Write-Output "OK: $msg"
 }
 
 function Print-Err($msg) {
-    Write-Host "✗ " -NoNewline -ForegroundColor Red
-    Write-Host $msg
+    Write-Output "ERR: $msg"
 }
 
 function Print-Warn($msg) {
-    Write-Host "⚠ " -NoNewline -ForegroundColor Yellow
-    Write-Host $msg
+    Write-Output "WARN: $msg"
 }
 
 function Print-Info($msg) {
-    Write-Host "ℹ " -NoNewline -ForegroundColor Cyan
-    Write-Host $msg
+    Write-Output "INFO: $msg"
 }
 
 # Validation: [A-Za-z_][A-Za-z0-9_]*
@@ -112,10 +108,14 @@ function Save-KeysToFile($keysDict) {
 function Cmd-Set($key, $val) {
     if ([string]::IsNullOrEmpty($key) -or $null -eq $val) {
         Print-Err "Usage: ai-env set <KEY> <VALUE>"
-        return 1
+        $global:_aienv_rc = 1
+        return
     }
 
-    if (-not (Test-VarName $key)) { return 1 }
+    if (-not (Test-VarName $key)) {
+        $global:_aienv_rc = 1
+        return
+    }
 
     $dict = Read-KeysFromFile
     $dict[$key] = $val
@@ -132,41 +132,50 @@ function Cmd-Set($key, $val) {
     $psEscaped = $val -replace "'", "''"
     Write-Output "${AI_ENV_EVAL_PREFIX} `$env:${key} = '$psEscaped'"
     Print-Ok "${key} set"
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: get
 function Cmd-Get($key) {
     if ([string]::IsNullOrEmpty($key)) {
         Print-Err "Usage: ai-env get <KEY>"
-        return 1
+        $global:_aienv_rc = 1
+        return
     }
 
-    if (-not (Test-VarName $key)) { return 1 }
+    if (-not (Test-VarName $key)) {
+        $global:_aienv_rc = 1
+        return
+    }
 
     # Try session env var first
     $envVal = Get-Item "Env:$key" -ErrorAction SilentlyContinue
     if ($null -ne $envVal -and [string]::Empty -ne $envVal.Value) {
         Write-Output $envVal.Value
-        return 0
+        $global:_aienv_rc = 0
+        return
     }
 
     # Fall back to keys file
     $dict = Read-KeysFromFile
     if ($dict.Contains($key)) {
         Write-Output $dict[$key]
-        return 0
+        $global:_aienv_rc = 0
+        return
     }
 
     # Fall back to User env var
     $userVal = [System.Environment]::GetEnvironmentVariable($key, [System.EnvironmentVariableTarget]::User)
     if (-not [string]::IsNullOrEmpty($userVal)) {
         Write-Output $userVal
-        return 0
+        $global:_aienv_rc = 0
+        return
     }
 
     Print-Err "${key} not found"
-    return 1
+    $global:_aienv_rc = 1
+    return
 }
 
 # Command: list
@@ -175,7 +184,8 @@ function Cmd-List {
 
     if ($dict.Count -eq 0) {
         Print-Info "No keys configured"
-        return 0
+        $global:_aienv_rc = 0
+        return
     }
 
     Write-Host ("{0,-35} {1}" -f "KEY", "VALUE") -ForegroundColor White
@@ -200,22 +210,28 @@ function Cmd-List {
 
         Write-Host ("{0,-35} {1}" -f $k, $masked)
     }
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: remove
 function Cmd-Remove($key) {
     if ([string]::IsNullOrEmpty($key)) {
         Print-Err "Usage: ai-env remove <KEY>"
-        return 1
+        $global:_aienv_rc = 1
+        return
     }
 
-    if (-not (Test-VarName $key)) { return 1 }
+    if (-not (Test-VarName $key)) {
+        $global:_aienv_rc = 1
+        return
+    }
 
     $dict = Read-KeysFromFile
     if (-not $dict.Contains($key)) {
         Print-Err "${key} not found"
-        return 1
+        $global:_aienv_rc = 1
+        return
     }
 
     $dict.Remove($key)
@@ -228,7 +244,8 @@ function Cmd-Remove($key) {
 
     Write-Output "${AI_ENV_EVAL_PREFIX} Remove-Item -Path Env:\${key} -ErrorAction SilentlyContinue"
     Print-Ok "${key} removed"
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: reload
@@ -236,7 +253,8 @@ function Cmd-Reload {
     $dict = Read-KeysFromFile
     if ($dict.Count -eq 0) {
         Print-Err "No keys file found or empty at ${AI_ENV_KEYS}"
-        return 1
+        $global:_aienv_rc = 1
+        return
     }
 
     $count = 0
@@ -248,7 +266,8 @@ function Cmd-Reload {
     }
 
     Print-Ok "Reloaded ${count} key(s)"
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: export
@@ -256,14 +275,15 @@ function Cmd-Export {
     if (Test-Path $AI_ENV_KEYS) {
         Get-Content $AI_ENV_KEYS
     }
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: doctor
 function Cmd-Doctor {
     $issues = 0
-    Write-Host "`nai-env doctor" -ForegroundColor Cyan
-    Write-Host "────────────────────────────────────────" -ForegroundColor Cyan
+    Write-Output "ai-env doctor"
+    Write-Output "────────────────────────────────────────"
 
     # 1. Config dir
     if (Test-Path $AI_ENV_DIR) {
@@ -324,17 +344,19 @@ function Cmd-Doctor {
     Write-Host "────────────────────────────────────────" -ForegroundColor Cyan
     if ($issues -eq 0) {
         Print-Ok "All checks passed"
-        return 0
+        $global:_aienv_rc = 0
     } else {
         Print-Err "${issues} issue(s) found"
-        return 1
+        $global:_aienv_rc = 1
     }
+    return
 }
 
 # Command: version
 function Cmd-Version {
     Write-Output "ai-env v${AI_ENV_VERSION}"
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
 # Command: help
@@ -370,10 +392,12 @@ Supported Shells:
   PowerShell 5.1+, PowerShell 7+, Bash, Zsh
 "@
     Write-Output $helpText
-    return 0
+    $global:_aienv_rc = 0
+    return
 }
 
-$script:exitCode = 0
+# Initialize global return code
+$global:_aienv_rc = 0
 
 # Main dispatcher
 function Main {
@@ -383,7 +407,7 @@ function Main {
     )
 
     if ($null -eq $argsList -or $argsList.Count -eq 0) {
-        $script:exitCode = Cmd-Help
+        Cmd-Help
         return
     }
 
@@ -399,51 +423,64 @@ function Main {
         '^(set)$' {
             $k = if ($remaining.Count -gt 0) { $remaining[0] } else { $null }
             $v = if ($remaining.Count -gt 1) { $remaining[1] } else { $null }
-            $script:exitCode = Cmd-Set $k $v
+            Cmd-Set $k $v
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(get)$' {
             $k = if ($remaining.Count -gt 0) { $remaining[0] } else { $null }
-            $script:exitCode = Cmd-Get $k
+            Cmd-Get $k
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(list|ls)$' {
-            $script:exitCode = Cmd-List
+            Cmd-List
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(remove|rm|delete|unset)$' {
             $k = if ($remaining.Count -gt 0) { $remaining[0] } else { $null }
-            $script:exitCode = Cmd-Remove $k
+            Cmd-Remove $k
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(reload)$' {
-            $script:exitCode = Cmd-Reload
+            Cmd-Reload
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(export)$' {
-            $script:exitCode = Cmd-Export
+            Cmd-Export
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(doctor)$' {
-            $script:exitCode = Cmd-Doctor
+            Cmd-Doctor
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(version|-v|--version)$' {
-            $script:exitCode = Cmd-Version
+            Cmd-Version
+            $script:exitCode = $global:_aienv_rc
             break
         }
         '^(help|-h|--help)$' {
-            $script:exitCode = Cmd-Help
+            Cmd-Help
+            $script:exitCode = $global:_aienv_rc
             break
         }
         default {
             Print-Err "Unknown command: ${cmd}"
             Print-Info "Run 'ai-env help' for usage"
-            $script:exitCode = 1
+            $global:_aienv_rc = 1
             break
         }
+    }
+    # Preserve exit code for help/case with no matching command
+    if (-not $global:_aienv_rc) {
+        $global:_aienv_rc = 0
     }
 }
 
 Main @args
-exit $script:exitCode
+exit $global:_aienv_rc

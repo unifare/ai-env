@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # ai-env - Shell Initialization for PowerShell
 # Source this file from your $PROFILE
 # ==============================================================================
@@ -46,7 +46,6 @@ function ai-env {
 
     $targetScript = $_AI_ENV_SCRIPT
     if (-not (Test-Path $targetScript)) {
-        # Fallback to PATH or script directory
         $cmd = Get-Command "ai-env.ps1" -ErrorAction SilentlyContinue
         if ($cmd) {
             $targetScript = $cmd.Source
@@ -58,7 +57,8 @@ function ai-env {
         return
     }
 
-    $rawOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $targetScript @ScriptArgs
+    # Capture both output and host streams so Write-Host output is preserved
+    $rawOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $targetScript @ScriptArgs 2>&1
     $retCode = $LASTEXITCODE
 
     $evalLines = @()
@@ -82,7 +82,9 @@ function ai-env {
         }
     }
 
-    return $retCode
+    $LASTEXITCODE = $retCode
+    $null = $retCode  # suppress return value output
+    return
 }
 
 $env:_AI_ENV_LOADED = "1"

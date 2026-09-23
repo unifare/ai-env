@@ -228,7 +228,31 @@ _cmd_export() {
         return 0
     fi
 
-    cat "$AI_ENV_KEYS"
+    cat "$AI_ENV_KEYS" | sed '1s/^\xEF\xBB\xBF//'
+}
+
+_cmd_exec() {
+    if [ $# -lt 1 ]; then
+        _print_err "Usage: ai-env exec <command> [args...]"
+        _print_info "Execute a command with all stored env vars loaded"
+        return 1
+    fi
+
+    local tmp_env
+    tmp_env=$(mktemp)
+    # Strip BOM and non-export lines for safe sourcing
+    cat "$AI_ENV_KEYS" | sed '1s/^\xEF\xBB\xBF//' | grep '^export ' > "$tmp_env" 2>/dev/null || true
+
+    # Load all stored keys into environment for the child process
+    (
+        set -a
+        source "$tmp_env"
+        set +a
+        "$@"
+    )
+    local rc=$?
+    rm -f "$tmp_env"
+    return $rc
 }
 
 _cmd_doctor() {
@@ -350,6 +374,7 @@ _cmd_help() {
     printf "  ai-env remove <KEY>         Remove a variable\n"
     printf "  ai-env reload               Reload all variables into current shell\n"
     printf "  ai-env export               Export all variables (for piping)\n"
+    printf "  ai-env exec <cmd> [args]     Execute a command with all env vars loaded\n"
     printf "  ai-env doctor               Run diagnostic checks\n"
     printf "  ai-env version              Show version\n"
     printf "  ai-env help                 Show this help\n\n"
@@ -400,6 +425,9 @@ main() {
             ;;
         export)
             _cmd_export
+            ;;
+        exec)
+            _cmd_exec "$@"
             ;;
         doctor)
             _cmd_doctor

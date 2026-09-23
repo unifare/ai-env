@@ -14,8 +14,9 @@ _AI_ENV_DIR="${HOME}/.config/ai-env"
 _AI_ENV_KEYS="${_AI_ENV_DIR}/keys"
 
 # ---- Source existing keys into the current shell ----
+# Source the keys file, stripping BOM if present
 if [ -f "$_AI_ENV_KEYS" ]; then
-    source "$_AI_ENV_KEYS"
+    source <(sed '1s/^\xEF\xBB\xBF//' "$_AI_ENV_KEYS")
 fi
 
 # ---- Mark that the function wrapper is active ----
