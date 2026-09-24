@@ -11,6 +11,10 @@ AI_ENV_DIR="${HOME}/.config/ai-env"
 AI_ENV_LOCAL_BIN="${HOME}/.local/bin"
 AI_ENV_SYSTEM_BIN="/usr/local/bin"
 
+# Where to fetch source files from when running the one-click (curl|bash) path.
+# Fall back to the raw GitHub URL so a bare pipe install always works.
+AI_ENV_RAW_BASE="${AI_ENV_RAW_BASE:-https://raw.githubusercontent.com/unifare/ai-env/main}"
+
 # ---- Color output ----
 _RED='\033[0;31m'
 _GREEN='\033[0;32m'
@@ -69,7 +73,7 @@ _CHECK_PREREQS() {
     fi
 
     # Check core tools
-    for tool in sed grep mktemp chmod cat; do
+    for tool in sed grep mktemp chmod cat curl; do
         if command -v "$tool" &>/dev/null; then
             _ok "$tool available"
         else
@@ -77,6 +81,25 @@ _CHECK_PREREQS() {
             exit 1
         fi
     done
+}
+
+# ---- Fetch missing source files ----
+# The one-click path (curl | bash) streams install.sh over stdin, so no sibling
+# files (ai-env, init.sh, config) exist on disk. Whenever a required source file
+# is missing, download it from the repo so the install can proceed. This also
+# covers running install.sh locally from a directory that lacks the sources.
+_FETCH_SOURCE_FILE() {
+    local name="$1"
+    local target="${SCRIPT_DIR}/${name}"
+
+    [ -f "$target" ] && return 0  # already present locally
+
+    _info "Downloading ${name} from ${AI_ENV_RAW_BASE}/${name}"
+    if ! curl -fsSL "${AI_ENV_RAW_BASE}/${name}" -o "$target"; then
+        _err "Failed to download ${name}"
+        _info "Check AI_ENV_RAW_BASE or run install.sh from a directory containing ${name}"
+        exit 1
+    fi
 }
 
 # ---- Create directories ----
@@ -101,12 +124,8 @@ _INSTALL_BINARY() {
     local target="${BIN_DIR}/ai-env"
     local source_file="${SCRIPT_DIR}/ai-env"
 
-    # If source file doesn't exist, try to create from embedded content
-    if [ ! -f "$source_file" ]; then
-        _err "Source file not found: ${source_file}"
-        _info "Make sure ai-env script is in the same directory as install.sh"
-        exit 1
-    fi
+    # Fetch the binary if it's not next to the installer (one-click path)
+    _FETCH_SOURCE_FILE "ai-env"
 
     cp "$source_file" "$target"
     chmod 755 "$target"
@@ -120,10 +139,8 @@ _INSTALL_INIT() {
     local target="${AI_ENV_DIR}/init.sh"
     local source_file="${SCRIPT_DIR}/init.sh"
 
-    if [ ! -f "$source_file" ]; then
-        _err "Source file not found: ${source_file}"
-        exit 1
-    fi
+    # Fetch init.sh if it's not next to the installer (one-click path)
+    _FETCH_SOURCE_FILE "init.sh"
 
     cp "$source_file" "$target"
     chmod 644 "$target"
@@ -136,6 +153,9 @@ _INSTALL_CONFIG() {
 
     local target="${AI_ENV_DIR}/config"
     local source_file="${SCRIPT_DIR}/config"
+
+    # Fetch config if it's not next to the installer (one-click path)
+    _FETCH_SOURCE_FILE "config"
 
     if [ -f "$source_file" ]; then
         cp "$source_file" "$target"
